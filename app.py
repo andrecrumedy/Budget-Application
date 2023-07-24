@@ -1,5 +1,4 @@
-# %% [markdown]
-# Known Bugs
+# %% #INFO KNOWN BUGS
 # - If split is done on most recent tranction, program will not identify last transaction
 
 # %% [markdown]
