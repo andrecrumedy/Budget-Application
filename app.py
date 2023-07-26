@@ -1,80 +1,100 @@
-# %% #INFO KNOWN BUGS
-# - If split is done on most recent tranction, program will not identify last transaction
+#%% #INFO KNOWN BUGS
+    # todo If split is done on most recent tranction, program will not identify last transaction
 
-# %% [markdown]
-# Penidng Updates
-# - Deleting chase file
-
-# %% [markdown]
-# ## <ins> Library Imports
-
-# %%
-display('<-------------------------Importing Libraries and Configuring Settings------------------------->')
+#%% #INFO LIBRARY IMPORTS AND SETTING
 
 import xlwings as xw
 import warnings
 import sys
 
-# xw.Range("a1").value = "NO"
-
 import pandas as pd # version 2.0.3
 import numpy as np 
 import os
 from datetime import datetime
+import polars as pl
 
 warnings.simplefilter('ignore')
-# pd.reset_option("all")
 
-#     pd.set_option('display.max_rows', None)
-#     pd.set_option('display.max_columns', None)
+#%% #INFO COMPUTATION FUNCTIONS
+def Compute_PayPeriod(PostDate:datetime) -> datetime:
 
-pd.set_option('display.max_colwidth', None)
-
-# %% [markdown]
-# ## <ins> Computation Functions
-
-# %%
-def Compute_PayPeriod(PostDate):
     PostDate = pd.to_datetime(PostDate)
     if PostDate.day >= 15:
         return datetime(year=PostDate.year, month=PostDate.month, day= 15) 
     else:
         return datetime(year=PostDate.year, month=PostDate.month, day= 1)
 
-# %%
-date = Compute_PayPeriod()
-
-# %% [markdown]
-# ## <ins> Current Transactions Table
-
-# %% [markdown]
-# <font color='blue'> 
-# **Importing Current Transactions Income and Expense Tables  
-#     Drop Pending Records in Ncome and Expense Tables  
-#     Last Balance Amount and Last Posting Date  
-#     Displays** 
-# <font color='black'>
+#%% #INFO Importing Current Transactions Income and Expense Tables  
+    #step Drop Pending Records in Ncome and Expense Tables  
+    #step Last Balance Amount and Last Posting Date  
 # - Using the Active Sheet To Find Workbook
 
-# %%
-display('<-------------------------Importing and Scubbing Current Transactions------------------------->')
-zPending = 'z-Pending'
+#%% #INFO SETTING ACTIVE WORKBOOK, WORKBOOK POINTERS, AND WORKBOOK VARIABLES
 shtTrans = xw.sheets('Transactions')
-
-# %%
+zPending = 'z-Pending'
 ExpenseTbl = shtTrans.tables["Table22"].range
 NcomeTbl = shtTrans.tables["Table26"].range
-ETransactions = shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value
-NTransactions = shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value
-# display(NTransactions)
-E_Pending = ETransactions[ETransactions['Description'].str.contains(zPending)]
-N_Pending = NTransactions[NTransactions['Description'].str.contains(zPending)]
 
-# %%
-for df in [E_Pending, N_Pending]:
-    df['Description'] = df['Description'].str[20:-4].str.strip().replace(["\s+"], ' ', regex = True)
-    df.drop('Posting Date', axis='columns', inplace=True)
-    df['Description'].replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
+    
+
+#%% #INFO SET AND INCOME AND EXPENSE TRANSACTION AND PENDING TRANSACTION DFS
+if True:
+    #? polars dataframe is not an option for as a converter, 
+    #? a custom converter can be made, however, it's much easier to use polars built-in converter
+    ETransactions = pl.from_pandas(shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value)
+    NTransactions = pl.from_pandas(shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value)
+
+    E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
+    N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
+
+    for df in [E_Pending, N_Pending]:
+        df=df.with_columns(
+            pl.col('Description').str.strip()\
+                .str.slice(20)\
+                    .str.replace(r'.{4}$', '')\
+                        .str.replace_all('\s+',' ')\
+                            .str.replace_all('\*','')
+        )
+
+
+
+        #? alternative polars code: dataframe and value transformations in one assignment at cost of more code
+    # E_Pending=ETransactions.filter(
+    #     pl.col('Description').str.contains(zPending)
+    # ).with_columns(
+    #     pl.col('Description').str.strip()\
+    #         .str.slice(20)\
+    #             .str.replace(r'.{4}$', '')\
+    #                 .str.replace_all('\s+',' ')\
+    #                     .str.replace_all('\*','')
+        
+    # ).select(pl.exclude('Posting Date'))
+
+    # N_Pending=NTransactions.filter(
+    #     pl.col('Description').str.contains(zPending)
+    # ).with_columns(
+    #     pl.col('Description').str.strip()\
+    #         .str.slice(20)\
+    #             .str.replace(r'.{4}$', '')\
+    #                 .str.replace_all('\s+',' ')\
+    #                     .str.replace_all('\*','')
+        
+    # ).select(pl.exclude('Posting Date'))
+
+#%% #? DEPRECATED PANDAS CODE
+   #INFO SET AND INCOME AND EXPENSE PENDING TRANSACTION DFS 
+
+# ETransactions = shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value
+# NTransactions = shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value
+
+# E_Pending = ETransactions[ETransactions['Description'].str.contains(zPending)].drop('Posting Date', axis='columns')
+# N_Pending = NTransactions[NTransactions['Description'].str.contains(zPending)].drop('Posting Date', axis='columns')
+
+# for df in [E_Pending, N_Pending]:
+#     df['Description'] = df['Description'].str[20:-4]\
+#         .str.strip()\
+#             .replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
+    
 
 # %%
 # E_Pending['Description'].replace('\*','', regex=True)
