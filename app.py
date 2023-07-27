@@ -35,21 +35,26 @@ zPending = 'z-Pending'
 ExpenseTbl = shtTrans.tables["Table22"].range
 NcomeTbl = shtTrans.tables["Table26"].range
 LastBalance = float(shtTrans.range('CBalance').value)
-    
+CurrentDateTime = datetime.now()
+# ChaseFile = 'Chase2517_Activity_' + CurrentDateTime.strftime('%Y%m%d') + '.CSV' #todo activate for live
+ChaseFile = 'Chase2517_Activity_20230722.CSV' 
 
-#%% #INFO SET AND INCOME AND EXPENSE TRANSACTION AND PENDING TRANSACTION DFS
+#%% #INFO SET AND INCOME,EXPENSE, PENDING TRANSACTION DFs AND LAST POSITNG DATE
 if True:
     #? polars dataframe is not an option for as a converter, 
     #? a custom converter can be made, however, it's much easier to use polars built-in converter
     ETransactions = pl.from_pandas(shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value)
     NTransactions = pl.from_pandas(shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value)
-
+    
+    # step iso pending transactions
     E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
     N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
 
+    # step remove pending transactions
     ETransactions=ETransactions.filter(pl.col('Description').str.contains(zPending) ==False)
     NTransactions=NTransactions.filter(pl.col('Description').str.contains(zPending) ==False)
 
+    # step clean description column
     for df in [E_Pending, N_Pending]:
         df=df.with_columns(
             pl.col('Description').str.strip()\
@@ -59,7 +64,8 @@ if True:
                             .str.replace_all('\*','')
         )
 
-
+    #  step retrieve last posting date
+    LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
 
         #? alternative polars code: dataframe and value transformations in one assignment at cost of more code
     # E_Pending=ETransactions.filter(
@@ -97,12 +103,6 @@ if True:
 #     df['Description'] = df['Description'].str[20:-4]\
 #         .str.strip()\
 #             .replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
-    
-
-#%% #INFO TRUNCATE PENDING TRANSACTIONS FROM AND GET LAST POSTING DATE
-
-
-
 
 #%% #? DEPRECATED PANDAS CODE
 # eList = E_Pending.index.to_list()
@@ -115,45 +115,54 @@ if True:
 # LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
 
 
+#%% #INFO READ NEW FILE AND TRUNCATE TO NEW TRANSACTIONS ONLY
 
-# %% [markdown]
-# ## <ins> New Transactions Table Part 1
+NewTrans = pl.scan_csv('Chase2517_Activity_20230722.CSV').with_columns(
+        pl.col('Balance').cast(float, strict=False),
+        pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y')
+    ).with_row_count().filter(
+        pl.col('row_nr') < (
+            pl.scan_csv('Chase2517_Activity_20230722.CSV').with_row_count().filter(
+                (pl.col('Balance').cast(float, strict=False) == LastBalance) &
+                (pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y') == LastPostDate)
+            ).collect().item(row=0, column='row_nr')
+        )
+    ).select(pl.exclude('row_nr')).collect()
 
-# %% [markdown]
-# <font color='blue'> 
-#  **Import Updated Transactions  using file name in current folder and todays date  
-#     Datatype transformations  
-#     Identify Last Inserted Record (assuming it is in dataset)  
-#     Identify New Balance  
-#     Pre-fix new Transactions with 'z-Pending'  
-#     Pull Needed Columns  
-#     Remove White Space and Special Characters  
-#     Displays**
 
-# %%
-display('<-------------------------Importing and Scubbing New Transactions------------------------->')
-CurrentDateTime = datetime.now()
-ChaseFile = 'Chase2517_Activity_' + CurrentDateTime.strftime('%Y%m%d') + '.CSV' 
-NewTrans = pd.read_csv(ChaseFile, header = 0, index_col=False)
 
-NewTrans['Balance'] = pd.to_numeric(NewTrans['Balance'], errors='coerce')
-NewTrans['Posting Date'] = pd.to_datetime(NewTrans['Posting Date'], errors='coerce')
+# %% #? DEPRECATED PANDAS CODE
 
-LastInserted = NewTrans[(NewTrans['Balance'] == LastBalance) & (NewTrans['Posting Date'] == LastPostDate)]
+# info read new file, convert columns to numeric, Find Last Inserted record
+# NewTrans = pd.read_csv(ChaseFile, header = 0, index_col=False)
 
-# %%
-if LastInserted.empty or NewTrans.empty: 
+# NewTrans['Balance'] = pd.to_numeric(NewTrans['Balance'], errors='coerce')
+# NewTrans['Posting Date'] = pd.to_datetime(NewTrans['Posting Date'], errors='coerce')
+
+# LastInserted = NewTrans[(NewTrans['Balance'] == LastBalance) & (NewTrans['Posting Date'] == LastPostDate)]
+
+#%% #INFO NO NEW TRANSACTION FAILSAFE AND NEW BALANCE
+if NewTrans.is_empty():
     sys.exit()
-else:
-    NewTrans = NewTrans.iloc[:LastInserted.index.min()]    
 
-if NewTrans['Balance'].any() or NewTrans.empty:
-    NewBalance = NewTrans[pd.isnull(NewTrans['Balance']) == False].iloc[:1]['Balance'].values[0]
+if NewTrans.select(pl.col('Balance').is_null().any()).item(0,0):
+    NewBalance = NewTrans.filter(
+                    pl.col('Balance').is_not_null()
+                ).item(column="Balance", row=0)
 else:
     NewBalance = LastBalance
 
-# %%
-LastPostDate
+# %% #? DEPRECATED PANDAS CODE
+# if LastInserted.empty or NewTrans.empty: 
+#     sys.exit()
+# else:
+#     NewTrans = NewTrans.iloc[:LastInserted.index.min()]    
+
+# if NewTrans['Balance'].any() or NewTrans.empty:
+#     NewBalance = NewTrans[pd.isnull(NewTrans['Balance']) == False].iloc[:1]['Balance'].values[0]
+# else:
+#     NewBalance = LastBalance
+
 
 # %%
 NewTrans['Description'][pd.isnull(NewTrans['Balance'])] = 'z-Pending' + NewTrans['Description'][pd.isnull(NewTrans['Balance'])]
