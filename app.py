@@ -34,7 +34,7 @@ shtTrans = xw.sheets('Transactions')
 zPending = 'z-Pending'
 ExpenseTbl = shtTrans.tables["Table22"].range
 NcomeTbl = shtTrans.tables["Table26"].range
-
+LastBalance = float(shtTrans.range('CBalance').value)
     
 
 #%% #INFO SET AND INCOME AND EXPENSE TRANSACTION AND PENDING TRANSACTION DFS
@@ -46,6 +46,9 @@ if True:
 
     E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
     N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
+
+    ETransactions=ETransactions.filter(pl.col('Description').str.contains(zPending) ==False)
+    NTransactions=NTransactions.filter(pl.col('Description').str.contains(zPending) ==False)
 
     for df in [E_Pending, N_Pending]:
         df=df.with_columns(
@@ -96,34 +99,22 @@ if True:
 #             .replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
     
 
-# %%
-# E_Pending['Description'].replace('\*','', regex=True)
-
-# %%
-E_Pending_dict = E_Pending.to_dict('index')
-N_Pending_dict = N_Pending.to_dict('index')
-
-# %%
-# display(NTransactions)
+#%% #INFO TRUNCATE PENDING TRANSACTIONS FROM AND GET LAST POSTING DATE
 
 
-# %%
-N_Pending
 
-# %%
-eList = E_Pending.index.to_list()
-nList = N_Pending.index.to_list()
 
-for df, lst in zip([ETransactions, NTransactions], [eList, nList]):
-    df.drop(lst, axis='index', inplace=True)
-    df.reset_index(drop=True, inplace=True)
+#%% #? DEPRECATED PANDAS CODE
+# eList = E_Pending.index.to_list()
+# nList = N_Pending.index.to_list()
 
-LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
-LastBalance = float(shtTrans.range('CBalance').value)
+# for df, lst in zip([ETransactions, NTransactions], [eList, nList]):
+#     df.drop(lst, axis='index', inplace=True)
+#     df.reset_index(drop=True, inplace=True)
 
-display('Last Posting Date: ' + LastPostDate.strftime('%m/%d/%y'),'Last Balance: ' + str(LastBalance))
-display('Showing Below Expense Table (without Pending)', ETransactions.head(), \
-        'Showing Below Income Table (without Pending)', NTransactions.head())
+# LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
+
+
 
 # %% [markdown]
 # ## <ins> New Transactions Table Part 1
@@ -210,7 +201,8 @@ shtTag = xw.sheets('Autotag')
 Autotag = shtTag.range('a1').expand().options(pd.DataFrame, header=1, index=1).value
 Autotag_dict = Autotag.to_dict('index')
 
-
+E_Pending_dict = E_Pending.to_dict('index')
+N_Pending_dict = N_Pending.to_dict('index')
     
 for dct in [E_Pending_dict, N_Pending_dict]:
     for catch in dct:
