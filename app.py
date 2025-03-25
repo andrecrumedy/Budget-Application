@@ -50,59 +50,22 @@ if True:
     E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
     N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
 
-    # step remove pending transactions
-    ETransactions=ETransactions.filter(pl.col('Description').str.contains(zPending) ==False)
-    NTransactions=NTransactions.filter(pl.col('Description').str.contains(zPending) ==False)
-
     # step clean description column
     for df in [E_Pending, N_Pending]:
         df=df.with_columns(
             pl.col('Description').str.strip()\
                 .str.slice(20)\
-                    .str.replace(r'.{4}$', '')\
-                        .str.replace_all('\s+',' ')\
-                            .str.replace_all('\*','')
+                    .str.replace(r'.{4}$', '')\ #? remove last 4 characters
+                        .str.replace_all('\s+',' ')\ #? remove multiple spaces
+                            .str.replace_all('\*','') #? remove asterisks
         )
+
+    # step remove pending transactions
+    ETransactions=ETransactions.filter(pl.col('Description').str.contains(zPending) ==False)
+    NTransactions=NTransactions.filter(pl.col('Description').str.contains(zPending) ==False)
 
     #  step retrieve last posting date
     LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
-
-        #? alternative polars code: dataframe and value transformations in one assignment at cost of more code
-    # E_Pending=ETransactions.filter(
-    #     pl.col('Description').str.contains(zPending)
-    # ).with_columns(
-    #     pl.col('Description').str.strip()\
-    #         .str.slice(20)\
-    #             .str.replace(r'.{4}$', '')\
-    #                 .str.replace_all('\s+',' ')\
-    #                     .str.replace_all('\*','')
-        
-    # ).select(pl.exclude('Posting Date'))
-
-    # N_Pending=NTransactions.filter(
-    #     pl.col('Description').str.contains(zPending)
-    # ).with_columns(
-    #     pl.col('Description').str.strip()\
-    #         .str.slice(20)\
-    #             .str.replace(r'.{4}$', '')\
-    #                 .str.replace_all('\s+',' ')\
-    #                     .str.replace_all('\*','')
-        
-    # ).select(pl.exclude('Posting Date'))
-
-#%% #? DEPRECATED PANDAS CODE
-   #INFO SET AND INCOME AND EXPENSE PENDING TRANSACTION DFS 
-
-# ETransactions = shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value
-# NTransactions = shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value
-
-# E_Pending = ETransactions[ETransactions['Description'].str.contains(zPending)].drop('Posting Date', axis='columns')
-# N_Pending = NTransactions[NTransactions['Description'].str.contains(zPending)].drop('Posting Date', axis='columns')
-
-# for df in [E_Pending, N_Pending]:
-#     df['Description'] = df['Description'].str[20:-4]\
-#         .str.strip()\
-#             .replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
 
 #%% #? DEPRECATED PANDAS CODE
 # eList = E_Pending.index.to_list()
@@ -112,14 +75,15 @@ if True:
 #     df.drop(lst, axis='index', inplace=True)
 #     df.reset_index(drop=True, inplace=True)
 
-# LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
 
 
 #%% #INFO READ NEW FILE AND TRUNCATE TO NEW TRANSACTIONS ONLY
 
 NewTrans = pl.scan_csv('Chase2517_Activity_20230722.CSV').with_columns(
         pl.col('Balance').cast(float, strict=False),
-        pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y')
+        pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y'),
+        pl.col('Description').str.replace_all('\s+',' ')\
+            .str.replace_all('\*','')
     ).with_row_count().filter(
         pl.col('row_nr') < (
             pl.scan_csv('Chase2517_Activity_20230722.CSV').with_row_count().filter(
@@ -141,7 +105,7 @@ NewTrans = pl.scan_csv('Chase2517_Activity_20230722.CSV').with_columns(
 
 # LastInserted = NewTrans[(NewTrans['Balance'] == LastBalance) & (NewTrans['Posting Date'] == LastPostDate)]
 
-#%% #INFO NO NEW TRANSACTION FAILSAFE AND NEW BALANCE
+#%% #INFO NO NEW TRANSACTIONS FAILSAFE AND NEW BALANCE
 if NewTrans.is_empty():
     sys.exit()
 
@@ -164,20 +128,21 @@ else:
 #     NewBalance = LastBalance
 
 
-# %%
-NewTrans['Description'][pd.isnull(NewTrans['Balance'])] = 'z-Pending' + NewTrans['Description'][pd.isnull(NewTrans['Balance'])]
+# %% #INFO UPDATE PENDING TRANSACTIONS FROM NEW FILE
+NewTrans = NewTrans.with_row_count().update(
+        NewTrans.with_row_count().filter(
+            pl.col('Balance').is_null()
+        ).select(pl.col('row_nr'),(pl.lit(zPending) + pl.col('Description')).alias('Description')),
+    on='row_nr'
+    ).select(pl.exclude('row_nr'))
 
-cols = ['Posting Date', 'Description', 'Amount']
-NewTrans = NewTrans[cols]
-NewTrans['Description'].replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
+#%% #?DEPRECATED PANDAS CODE
+# NewTrans['Description'][pd.isnull(NewTrans['Balance'])] = 'z-Pending' + NewTrans['Description'][pd.isnull(NewTrans['Balance'])]
 
-display('New Balance: ' + str(NewBalance), 'Downloaded Transactions For Today', NewTrans.head(),'Data Types', NewTrans.dtypes)
+# cols = ['Posting Date', 'Description', 'Amount']
+# NewTrans = NewTrans[cols]
+# NewTrans['Description'].replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
 
-# %%
-NewTrans
-
-# %% [markdown]
-# ## <ins> New Transactions Table Part 2
 
 # %% [markdown]
 # <font color='blue'>  
