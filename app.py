@@ -6,251 +6,167 @@
 import xlwings as xw
 import warnings
 import sys
+from pathlib import Path
 
 import pandas as pd # version 2.0.3
 import numpy as np 
 import os
 from datetime import datetime
 import polars as pl
+import re
 
 warnings.simplefilter('ignore')
-
-#%% #INFO COMPUTATION FUNCTIONS
-def Compute_PayPeriod(PostDate:datetime) -> datetime:
-
-    PostDate = pd.to_datetime(PostDate)
-    if PostDate.day >= 15:
-        return datetime(year=PostDate.year, month=PostDate.month, day= 15) 
-    else:
-        return datetime(year=PostDate.year, month=PostDate.month, day= 1)
-
-#%% #INFO Importing Current Transactions Income and Expense Tables  
-    #step Drop Pending Records in Ncome and Expense Tables  
-    #step Last Balance Amount and Last Posting Date  
-# - Using the Active Sheet To Find Workbook
-
 #%% #INFO SETTING ACTIVE WORKBOOK, WORKBOOK POINTERS, AND WORKBOOK VARIABLES
-shtTrans = xw.sheets('Transactions')
+shtTrans = xw.sheets('ChaseTransactions')
 zPending = 'z-Pending'
 ExpenseTbl = shtTrans.tables["Table22"].range
 NcomeTbl = shtTrans.tables["Table26"].range
 LastBalance = float(shtTrans.range('CBalance').value)
-CurrentDateTime = datetime.now()
-# ChaseFile = 'Chase2517_Activity_' + CurrentDateTime.strftime('%Y%m%d') + '.CSV' #todo activate for live
-ChaseFile = 'Chase2517_Activity_20230722.CSV' 
+LastProcessedFile = shtTrans.range('LastReadFilename').value
 
-#%% #INFO SET AND INCOME,EXPENSE, PENDING TRANSACTION DFs AND LAST POSITNG DATE
-if True:
-    #? polars dataframe is not an option for as a converter, 
-    #? a custom converter can be made, however, it's much easier to use polars built-in converter
-    ETransactions = pl.from_pandas(shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value)
-    NTransactions = pl.from_pandas(shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value)
-    
-    # step iso pending transactions
-    E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
-    N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
+# Find all Chase bank CSV files matching the pattern
+file_pattern = r'Chase2517_Activity_\d{8}\.CSV'
+print(f"{list(Path('.').iterdir())=}")
+files =  [f for f in Path('.').iterdir() if re.match(file_pattern, f.name)]
+print(f"{files=}\n")
+if not files:
+    sys.exit("No matching Chase bank CSV files found.")
 
-    # step clean description column
-    for df in [E_Pending, N_Pending]:
-        df=df.with_columns(
-            pl.col('Description').str.strip()\
-                .str.slice(20)\
-                    .str.replace(r'.{4}$', '')\ #? remove last 4 characters
-                        .str.replace_all('\s+',' ')\ #? remove multiple spaces
-                            .str.replace_all('\*','') #? remove asterisks
-        )
+# Get the file with the most recent date in its name
+ChaseFile = str(max(files, key=lambda x: datetime.strptime(x.stem.split('_')[-1], '%Y%m%d')))
 
-    # step remove pending transactions
-    ETransactions=ETransactions.filter(pl.col('Description').str.contains(zPending) ==False)
-    NTransactions=NTransactions.filter(pl.col('Description').str.contains(zPending) ==False)
+# Check if file was already processed
+if ChaseFile == LastProcessedFile:
+    sys.exit("Most recent Chase file has already been processed.")
 
-    #  step retrieve last posting date
-    LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
+#%% #INFO SET INCOME,EXPENSE, PENDING TRANSACTION DFs AND LAST POSITNG DATE
+#? polars dataframe is not an option for as a converter, 
+#? a custom converter can be made, however, it's much easier to use polars built-in converter
+ETransactions = pl.from_pandas(shtTrans.range(ExpenseTbl.address).options(pd.DataFrame, header=1, index=False).value)
+NTransactions = pl.from_pandas(shtTrans.range(NcomeTbl.address).options(pd.DataFrame, header=1, index=False).value)
 
-#%% #? DEPRECATED PANDAS CODE
-# eList = E_Pending.index.to_list()
-# nList = N_Pending.index.to_list()
+# step iso pending transactions
+E_Pending=ETransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
+N_Pending=NTransactions.filter(pl.col('Description').str.contains(zPending)).select(pl.exclude('Posting Date'))
 
-# for df, lst in zip([ETransactions, NTransactions], [eList, nList]):
-#     df.drop(lst, axis='index', inplace=True)
-#     df.reset_index(drop=True, inplace=True)
+# step clean description column
+for i, df in enumerate([E_Pending, N_Pending]):
+    modified_df = df.with_columns(
+        pl.col('Description').str.strip_chars() #? remove leading and trailing spaces
+            .str.slice(20) #? remove first 20 characters
+            .str.replace(r'.{4}$', '') #? remove last 4 characters
+            .str.replace_all('\s+',' ') #? remove multiple spaces
+            .str.replace_all('\*','') #? remove asterisks
+    )
+    if i == 0:
+        E_Pending_dict = modified_df.to_pandas().to_dict('index')
+    else:
+        N_Pending_dict = modified_df.to_pandas().to_dict('index')
+
+# step remove pending transactions
+ETransactions = ETransactions.filter(~pl.col('Description').str.contains(zPending))
+NTransactions = NTransactions.filter(~pl.col('Description').str.contains(zPending))
+
+#  step retrieve last posting date
+LastPostDate = max(ETransactions['Posting Date'].max(), NTransactions['Posting Date'].max())
 
 
 
-#%% #INFO READ NEW FILE AND TRUNCATE TO NEW TRANSACTIONS ONLY
-
-NewTrans = pl.scan_csv('Chase2517_Activity_20230722.CSV').with_columns(
+#%% #INFO READ NEW FILE AND SET IMPORTANT DATA TYPES
+file = pl.scan_csv(ChaseFile, truncate_ragged_lines=True).with_columns( #? clean Blance and Posting Date columns
         pl.col('Balance').cast(float, strict=False),
-        pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y'),
-        pl.col('Description').str.replace_all('\s+',' ')\
-            .str.replace_all('\*','')
-    ).with_row_count().filter(
+        pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y')
+    )
+#%% #INFO GET AND TRANSFORM NEW TRANSACTIONS AND UPDATE NEW BALANCE
+NewTrans = file.with_row_count().filter( #? filter out old transactions
         pl.col('row_nr') < (
-            pl.scan_csv('Chase2517_Activity_20230722.CSV').with_row_count().filter(
-                (pl.col('Balance').cast(float, strict=False) == LastBalance) &
-                (pl.col('Posting Date').str.strptime(pl.Datetime, '%m/%d/%Y') == LastPostDate)
+            file.with_row_count().filter(
+                (pl.col('Balance') == LastBalance) &
+                (pl.col('Posting Date') == LastPostDate)
             ).collect().item(row=0, column='row_nr')
         )
-    ).select(pl.exclude('row_nr')).collect()
+    ).with_columns( #? add new columns amd modify Description column
+        (pl.when(pl.col('Balance').is_null()
+            ).then(pl.lit(zPending) + pl.col('Description')
+            ).otherwise(pl.col('Description')
+            ).alias('Description'))
+                .str.replace_all('\s+',' ')
+                .str.replace_all('\*',''),
+        pl.lit(None).alias('Category'),
+        pl.lit(None).alias('Sub-Category'),
+        pl.col('Posting Date').dt.truncate("1mo").alias('Pay Period'),  # Always truncate to 1st of month
+    ).collect()
 
-
-
-# %% #? DEPRECATED PANDAS CODE
-
-# info read new file, convert columns to numeric, Find Last Inserted record
-# NewTrans = pd.read_csv(ChaseFile, header = 0, index_col=False)
-
-# NewTrans['Balance'] = pd.to_numeric(NewTrans['Balance'], errors='coerce')
-# NewTrans['Posting Date'] = pd.to_datetime(NewTrans['Posting Date'], errors='coerce')
-
-# LastInserted = NewTrans[(NewTrans['Balance'] == LastBalance) & (NewTrans['Posting Date'] == LastPostDate)]
-
-#%% #INFO NO NEW TRANSACTIONS FAILSAFE AND NEW BALANCE
 if NewTrans.is_empty():
     sys.exit()
 
-if NewTrans.select(pl.col('Balance').is_null().any()).item(0,0):
-    NewBalance = NewTrans.filter(
-                    pl.col('Balance').is_not_null()
-                ).item(column="Balance", row=0)
-else:
-    NewBalance = LastBalance
-
-# %% #? DEPRECATED PANDAS CODE
-# if LastInserted.empty or NewTrans.empty: 
-#     sys.exit()
-# else:
-#     NewTrans = NewTrans.iloc[:LastInserted.index.min()]    
-
-# if NewTrans['Balance'].any() or NewTrans.empty:
-#     NewBalance = NewTrans[pd.isnull(NewTrans['Balance']) == False].iloc[:1]['Balance'].values[0]
-# else:
-#     NewBalance = LastBalance
-
-
-# %% #INFO UPDATE PENDING TRANSACTIONS FROM NEW FILE
-NewTrans = NewTrans.with_row_count().update(
-        NewTrans.with_row_count().filter(
-            pl.col('Balance').is_null()
-        ).select(pl.col('row_nr'),(pl.lit(zPending) + pl.col('Description')).alias('Description')),
-    on='row_nr'
-    ).select(pl.exclude('row_nr'))
-
-#%% #?DEPRECATED PANDAS CODE
-# NewTrans['Description'][pd.isnull(NewTrans['Balance'])] = 'z-Pending' + NewTrans['Description'][pd.isnull(NewTrans['Balance'])]
-
-# cols = ['Posting Date', 'Description', 'Amount']
-# NewTrans = NewTrans[cols]
-# NewTrans['Description'].replace({'\*':'',"\s+":' '}, regex=True, inplace=True)
-
-
-# %% [markdown]
-# <font color='blue'>  
-# **Adding in Pay Period, Category, and Sub-Cateogry  
-#    Read in Auto tag using active sheet to identify workbook and corresponding dictionary structure  
-#   Adding in Category and Sub-Category using dictionary structure  
-#   Separate Expenses versus income  
-#     Order Columns  
-#     Display Columns** 
-# <font color='black'>
-# 
-
-# %%
-# NewTrans
-# Temp
-# NewTrans.loc[Temp.index.to_list(), col]
-# catch
-# dct[catch][col]
-# dct
-# E_Pending_dict
-# Autotag_dict
-
-# %%
-display('<-------------------------Importing and Scubbing New Transactions Part 2------------------------->')
-NewTrans['Pay Period'] = NewTrans['Posting Date'].apply(Compute_PayPeriod)
-NewTrans['Category'] = np.nan
-NewTrans['Sub-Category'] = np.nan
-
+NewBalance = NewTrans.filter(pl.col('Balance').is_not_null())['Balance'][0]
+#%% #INFO SET AUTOTAG DICTIONARY
 shtTag = xw.sheets('Autotag')
 Autotag = shtTag.range('a1').expand().options(pd.DataFrame, header=1, index=1).value
 Autotag_dict = Autotag.to_dict('index')
 
-E_Pending_dict = E_Pending.to_dict('index')
-N_Pending_dict = N_Pending.to_dict('index')
-    
-for dct in [E_Pending_dict, N_Pending_dict]:
-    for catch in dct:
-        Temp = NewTrans.loc[:,['Category', 'Sub-Category', 'Pay Period']][(NewTrans['Description'].str.lower().str.contains(dct[catch]['Description'].lower())) & (pd.isnull(NewTrans['Category'])) & (NewTrans['Amount'] == dct[catch]['Amount'])]
-        if not Temp.empty:
+#%% #INFO AUTOTAG NEW TRANSACTIONS FROM OLD PENIDNG TRANSACTIONS
+for dct in [E_Pending_dict , N_Pending_dict]:
+    for catch, values in dct.items():
+        
+        Temp = NewTrans.filter(
+            (pl.col('Description').str.to_lowercase().str.contains(values['Description'].lower())) &
+            (pl.col('Category').is_null()) &
+            (pl.col('Amount') == values['Amount'])
+        ).select(pl.col(['Category', 'Sub-Category', 'Pay Period', 'row_nr']))
+        
+        if not Temp.is_empty():
             for col in ['Category', 'Sub-Category', 'Pay Period']:
                 try:
-                    NewTrans.loc[Temp.index.to_list(), col] = dct[catch][col]                        
+                    NewTrans = NewTrans.with_columns(
+                        (pl.when(pl.col('row_nr').is_in(Temp.get_column('row_nr'))
+                            ).then(values[col])
+                            ).otherwise(pl.col(col)
+                            ).alias(col)
+                    )
                 except:
                     pass
-
+#%% #INFO AUTOTAG NEW TRANSACTIONS FROM AUTOTAG SHEET
 for col in ['Category', 'Sub-Category']:
     for catch in Autotag_dict.keys():
-        NewTrans.loc[:,col][(NewTrans['Description'].str.lower().str.contains(catch.lower())) & (pd.isnull(NewTrans[col]))] = Autotag_dict[catch][col]    
+        # print(f'{col=}\n{catch=}\n{Autotag_dict[catch][col]=}\n{pl.col(col)=}')
+        NewTrans = NewTrans.with_columns(
+            (pl.when(pl.col('Description').str.to_lowercase().str.contains(catch.lower()) 
+                     & pl.col(col).is_null()
+                ).then(pl.lit(Autotag_dict[catch][col]))
+                ).otherwise(pl.col(col)
+                ).alias(col)
+        )
 
-NewTrans['Description'].replace({'\*':'',"\s+":' '}, regex = True, inplace=True)
+NewTrans = NewTrans.with_columns(
+        pl.when(pl.col('Category').is_not_null())
+            .then(pl.col('Description') + ' (A)')
+            .otherwise(pl.col('Description'))
+            .alias('Description')
+    )
 
-NewTrans['Description'][pd.isnull(NewTrans['Category']) == False] += ' (A)'
-NewTransExpse = NewTrans[NewTrans['Amount'] <= 0]
-NewTransNcome = NewTrans[NewTrans['Amount'] > 0]
+NewTransExpse = NewTrans.filter(pl.col('Amount') <= 0).select(['Pay Period', 'Posting Date', 'Description', 'Amount', 'Category', 'Sub-Category'])
+NewTransNcome = NewTrans.filter(pl.col('Amount') > 0).select(['Pay Period', 'Posting Date', 'Description', 'Amount', 'Category'])
 
-cols = ['Pay Period', 'Posting Date', 'Description', 'Amount', 'Category', 'Sub-Category']
-cols2 = ['Pay Period', 'Posting Date', 'Description', 'Amount', 'Category']
-NewTransExpse = NewTransExpse[cols]
-NewTransNcome = NewTransNcome[cols2]
+# %% #INFO UPDATE TRANSACTION SHEET WITH NEW TRANSACTIONS AND BALANCE
 
-display('New Expense Trans READY, ' + str(len(NewTransExpse)) + ' NewRecords',NewTransExpse.head())
-display('New Ncome Trans READY, ' + str(len(NewTransNcome)) + ' NewRecords',NewTransNcome.head())
+for tbl, dList, New in zip([ExpenseTbl, NcomeTbl], [len(E_Pending_dict), len(N_Pending_dict)], [NewTransExpse, NewTransNcome]):
+    if dList != 0:
+        shtTrans.range(tbl(2,1).address,tbl(dList+1,len(New.columns)).address).delete(shift='up') #? delete pending transactions
 
-# %%
-# NewTransExpse
+    if len(New) != 0:
+        NewRecords = shtTrans.range(tbl(2,1).address,tbl(len(New)+1,len(New.columns)).address) #?define range for new records
+        NewRecords.insert(shift = 'down', copy_origin='format_from_right_or_below') #? insert spacce for new records
 
-# %% [markdown]
-# ## <ins> Updating Current Transaction With New Transactions
+        shtTrans.range(tbl(len(New)+2,1).address, tbl(len(New)+2,len(New.columns)).address).color = (169, 208, 142) #? marker for new record insert
+        NewRecords = shtTrans.range(tbl(1,1).address,tbl(len(New)+1,len(New.columns)).address) #? redefine range for new records
+        NewRecords.color = None 
+        NewRecords.options(pd.DataFrame,header=1, index=False).value = New.to_pandas()
 
-# %% [markdown]
-# <font color='blue'>  
-# **Identify Space For New Records  
-#     Delete old records, Add Space, Insert New Records**  
-# <font color='blue'>
-# **Update Current Balance**
 
-# %%
-if NewTrans.empty:
-    display('<-----------------------------------NO NEW TRANSACTIONS----------------------------------------->')
-else:
-#     Update_Current_Transaction_With_New()
-    display('<-------------------------Updating Current Transactions With New Transactions------------------------->')
-    NewRecords = shtTrans.range(NcomeTbl(2,1).address,NcomeTbl(len(NewTransNcome)+1,len(NewTransNcome.columns)).address)
-
-    for tbl, dList, New in zip([ExpenseTbl, NcomeTbl], [eList, nList], [NewTransExpse, NewTransNcome]):
-        if len(dList) != 0:
-            shtTrans.range(tbl(2,1).address,tbl(len(dList)+1,len(New.columns)).address).delete(shift='up')
-
-        if len(New) != 0:
-            NewRecords = shtTrans.range(tbl(2,1).address,tbl(len(New)+1,len(New.columns)).address)
-            NewRecords.insert(shift = 'down', copy_origin='format_from_right_or_below')
-
-            NewRecords = shtTrans.range(tbl(1,1).address,tbl(len(New)+1,len(New.columns)).address)
-            shtTrans.range(tbl(len(New)+2,1).address, tbl(len(New)+2,len(New.columns)).address).color = (169, 208, 142)
-            NewRecords.color = None
-            NewRecords.options(pd.DataFrame,header=1, index=False).value = New
-
-# %%
 shtTrans.range('CBalance').value = NewBalance
 
-# %%
-# Autotag_dict
-# Autotag
-
-# %%
-
-
-# %%
-
+shtTrans.range('LastReadFilename').value = ChaseFile
 
 
