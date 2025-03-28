@@ -100,7 +100,10 @@ NewTrans = file.with_row_count().filter( #? filter out old transactions
 if NewTrans.is_empty():
     sys.exit()
 
-NewBalance = NewTrans.filter(pl.col('Balance').is_not_null())['Balance'][0]
+# Get the first non-null balance if it exists, otherwise use LastBalance
+NewPostedTrans = NewTrans.filter(pl.col('Balance').is_not_null())['Balance']
+NewBalance = NewPostedTrans[0] if not NewPostedTrans.is_empty() else LastBalance
+    
 #%% #INFO SET AUTOTAG DICTIONARY
 shtTag = xw.sheets('Autotag')
 Autotag = shtTag.range('a1').expand().options(pd.DataFrame, header=1, index=1).value
@@ -168,5 +171,15 @@ for tbl, dList, New in zip([ExpenseTbl, NcomeTbl], [len(E_Pending_dict), len(N_P
 shtTrans.range('CBalance').value = NewBalance
 
 shtTrans.range('LastReadFilename').value = ChaseFile
+
+#%% #INFO CLEANUP PROCESSED FILES
+# Delete the current file and any remaining Chase files
+for f in files:  # Reuse the already matched files
+    try:
+        Path(f).unlink()
+    except:
+        pass
+
+#%%
 
 

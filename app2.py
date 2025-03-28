@@ -75,7 +75,11 @@ file = pl.scan_csv(latest_file, truncate_ragged_lines=True).with_columns(
 NewTrans = file.filter(
     pl.col('Transaction Date') >= LastPostDate
 ).with_columns(
-    pl.col('Description').str.replace_all('\s+', ' ').str.replace_all('\*', ''),
+    pl.coalesce(pl.col('Description'), pl.col('Type'))
+        .str.strip_chars()
+        .str.replace_all('\s+', ' ')
+        .str.replace_all('\*', '')
+        .alias('Description'),
     pl.lit(None).alias('Category'),
     pl.lit(None).alias('Sub-Category'),
     pl.col('Transaction Date').dt.truncate("1mo").alias('Pay Period'),
@@ -160,4 +164,12 @@ for tbl, dList, New in zip([ExpenseTbl, NcomeTbl],
         NewRecords.color = None 
         NewRecords.options(pd.DataFrame,header=1, index=False).value = New.to_pandas()
 
-shtTrans.range('LastReadFilename').value = str(latest_file) 
+shtTrans.range('LastReadFilename').value = str(latest_file)
+
+#%% #INFO CLEANUP PROCESSED FILES
+# Delete the current file and any remaining transaction files
+# for f in files: 
+#     try:
+#         Path(f).unlink()
+#     except:
+#         pass
